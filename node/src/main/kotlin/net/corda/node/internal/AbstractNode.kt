@@ -178,19 +178,27 @@ abstract class AbstractNode(val configuration: NodeConfiguration,
         check(started == null) { "Node has already been started" }
         log.info("Generating nodeInfo ...")
         initCertificate()
-        val (keyPairs, info) = initNodeInfo()
-        val identityKeypair = keyPairs.first { it.public == info.legalIdentities.first().owningKey }
-        val serialisedNodeInfo = info.serialize()
-        val signature = identityKeypair.sign(serialisedNodeInfo)
-        // TODO: Signed data might not be sufficient for multiple identities, as it only contains one signature.
-        NodeInfoWatcher.saveToFile(configuration.baseDirectory, SignedData(serialisedNodeInfo, signature))
+        readNetworkParameters()
+        val schemaService = NodeSchemaService(cordappLoader)
+        initialiseDatabasePersistence(schemaService) { database ->
+            val persistentNetworkMapCache = PersistentNetworkMapCache(
+                    database,
+                    networkParameters.notaries)
+
+            val (keyPairs, info) = initNodeInfo(persistentNetworkMapCache)
+
+            val identityKeypair = keyPairs.first { it.public == info.legalIdentities.first().owningKey }
+            val serialisedNodeInfo = info.serialize()
+            val signature = identityKeypair.sign(serialisedNodeInfo)
+            // TODO: Signed data might not be sufficient for multiple identities, as it only contains one signature.
+            NodeInfoWatcher.saveToFile(configuration.baseDirectory, SignedData(serialisedNodeInfo, signature))
+        }
     }
 
     open fun start(): StartedNode<AbstractNode> {
         check(started == null) { "Node has already been started" }
         log.info("Node starting up ...")
         initCertificate()
-        val (keyPairs, info) = initNodeInfo()
         readNetworkParameters()
         val schemaService = NodeSchemaService(cordappLoader.cordappSchemas)
         val identityService = makeIdentityService(info)
@@ -199,7 +207,12 @@ abstract class AbstractNode(val configuration: NodeConfiguration,
             identityService.loadIdentities(info.legalIdentitiesAndCerts)
             val transactionStorage = makeTransactionStorage(database)
             val stateLoader = StateLoaderImpl(transactionStorage)
+            val nms = PersistentNetworkMapCache(
+                    database,
+                    networkParameters.notaries)
+            val (keyPairs, info) = initNodeInfo(nms)
             val nodeServices = makeServices(keyPairs, schemaService, transactionStorage, stateLoader, database, info, identityService)
+            services.networkMapCache.addNode(info)
             val notaryService = makeNotaryService(nodeServices, database)
             val smm = makeStateMachineManager(database)
             val flowStarter = FlowStarterImpl(serverThread, smm)
@@ -244,7 +257,6 @@ abstract class AbstractNode(val configuration: NodeConfiguration,
         networkMapUpdater.subscribeToNetworkMap()
 
         // If we successfully  loaded network data from database, we set this future to Unit.
-        services.networkMapCache.addNode(info)
         _nodeReadyFuture.captureLater(services.networkMapCache.nodeReady.map { Unit })
 
         return startedImpl.apply {
@@ -262,7 +274,7 @@ abstract class AbstractNode(val configuration: NodeConfiguration,
         InteractiveShell.startShell(configuration, rpcOps, userService, _services.identityService, _services.database)
     }
 
-    private fun initNodeInfo(): Pair<Set<KeyPair>, NodeInfo> {
+    private fun initNodeInfo(networkMapCache: PersistentNetworkMapCache): Pair<Set<KeyPair>, NodeInfo> {
         val (identity, identityKeyPair) = obtainIdentity(notaryConfig = null)
         val keyPairs = mutableSetOf(identityKeyPair)
 
@@ -276,13 +288,16 @@ abstract class AbstractNode(val configuration: NodeConfiguration,
                 identity
             }
         }
-        val info = NodeInfo(
+        // Check if we have already stored a version of 'our own' NodeInfo, this is to avoid regenerating it with
+        // a different timestamp
+        val previouslyGeneratedInfo = networkMapCache.getNodesByLegalName(myLegalName).firstOrNull()
+        val info = previouslyGeneratedInfo ?: NodeInfo(
                 myAddresses(),
                 setOf(identity, myNotaryIdentity).filterNotNull(),
                 versionInfo.platformVersion,
                 platformClock.instant().toEpochMilli()
         )
-        return Pair(keyPairs, info)
+        return Pair(keyPairs.toSet(), info)
     }
 
     protected abstract fun myAddresses(): List<NetworkHostAndPort>
