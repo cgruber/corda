@@ -178,16 +178,10 @@ abstract class AbstractNode(val configuration: NodeConfiguration,
         check(started == null) { "Node has already been started" }
         log.info("Generating nodeInfo ...")
         initCertificate()
-        // HACK:
-        //networkParameters = NetworkParameters(1, emptyList(), Duration.ZERO, 1,1, Instant.now(), 1)
         val schemaService = NodeSchemaService(cordappLoader.cordappSchemas)
         initialiseDatabasePersistence(schemaService,  makeIdentityService()) { database ->
-            val persistentNetworkMapCache = PersistentNetworkMapCache(
-                    database,
-                    emptyList())
-
+            val persistentNetworkMapCache = PersistentNetworkMapCache(database, emptyList())
             val (keyPairs, info) = initNodeInfo(persistentNetworkMapCache)
-
             val identityKeypair = keyPairs.first { it.public == info.legalIdentities.first().owningKey }
             val serialisedNodeInfo = info.serialize()
             val signature = identityKeypair.sign(serialisedNodeInfo)
@@ -748,12 +742,13 @@ abstract class AbstractNode(val configuration: NodeConfiguration,
         override val stateMachineRecordedTransactionMapping = DBTransactionMappingStorage()
         override val auditService = DummyAuditService()
         override val transactionVerifierService by lazy { makeTransactionVerifierService() }
-        val persistentNetworkMapCache by lazy {
-            PersistentNetworkMapCache(
-                    database,
-                    networkParameters.notaries)
+        override val networkMapCache by lazy {
+            NetworkMapCacheImpl(
+                    PersistentNetworkMapCache(
+                        database,
+                        networkParameters.notaries),
+                    identityService)
         }
-        override val networkMapCache by lazy { NetworkMapCacheImpl(persistentNetworkMapCache, identityService) }
         override val vaultService by lazy { makeVaultService(keyManagementService, stateLoader, database.hibernateConfig) }
         override val contractUpgradeService by lazy { ContractUpgradeServiceImpl() }
         override val attachments: AttachmentStorage get() = this@AbstractNode.attachments
