@@ -67,7 +67,6 @@ import org.hibernate.type.descriptor.java.JavaTypeDescriptorRegistry
 import org.slf4j.Logger
 import rx.Observable
 import java.io.IOException
-import java.io.NotSerializableException
 import java.lang.reflect.InvocationTargetException
 import java.security.KeyPair
 import java.security.KeyStoreException
@@ -76,6 +75,7 @@ import java.security.cert.X509Certificate
 import java.sql.Connection
 import java.time.Clock
 import java.time.Duration
+import java.time.Instant
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
@@ -178,12 +178,13 @@ abstract class AbstractNode(val configuration: NodeConfiguration,
         check(started == null) { "Node has already been started" }
         log.info("Generating nodeInfo ...")
         initCertificate()
-        readNetworkParameters()
-        val schemaService = NodeSchemaService(cordappLoader)
-        initialiseDatabasePersistence(schemaService) { database ->
+        // HACK:
+        //networkParameters = NetworkParameters(1, emptyList(), Duration.ZERO, 1,1, Instant.now(), 1)
+        val schemaService = NodeSchemaService(cordappLoader.cordappSchemas)
+        initialiseDatabasePersistence(schemaService,  makeIdentityService()) { database ->
             val persistentNetworkMapCache = PersistentNetworkMapCache(
                     database,
-                    networkParameters.notaries)
+                    emptyList())
 
             val (keyPairs, info) = initNodeInfo(persistentNetworkMapCache)
 
@@ -201,16 +202,13 @@ abstract class AbstractNode(val configuration: NodeConfiguration,
         initCertificate()
         readNetworkParameters()
         val schemaService = NodeSchemaService(cordappLoader.cordappSchemas)
-        val identityService = makeIdentityService(info)
+        val identityService = makeIdentityService()
         // Do all of this in a database transaction so anything that might need a connection has one.
         val (startedImpl, schedulerService) = initialiseDatabasePersistence(schemaService, identityService) { database ->
+            val (keyPairs, info) = initNodeInfo(services.networkMapCache)
             identityService.loadIdentities(info.legalIdentitiesAndCerts)
             val transactionStorage = makeTransactionStorage(database)
             val stateLoader = StateLoaderImpl(transactionStorage)
-            val nms = PersistentNetworkMapCache(
-                    database,
-                    networkParameters.notaries)
-            val (keyPairs, info) = initNodeInfo(nms)
             val nodeServices = makeServices(keyPairs, schemaService, transactionStorage, stateLoader, database, info, identityService)
             services.networkMapCache.addNode(info)
             val notaryService = makeNotaryService(nodeServices, database)
@@ -274,7 +272,7 @@ abstract class AbstractNode(val configuration: NodeConfiguration,
         InteractiveShell.startShell(configuration, rpcOps, userService, _services.identityService, _services.database)
     }
 
-    private fun initNodeInfo(networkMapCache: PersistentNetworkMapCache): Pair<Set<KeyPair>, NodeInfo> {
+    private fun initNodeInfo(networkMapCache: NetworkMapCacheBaseInternal): Pair<Set<KeyPair>, NodeInfo> {
         val (identity, identityKeyPair) = obtainIdentity(notaryConfig = null)
         val keyPairs = mutableSetOf(identityKeyPair)
 
@@ -647,13 +645,10 @@ abstract class AbstractNode(val configuration: NodeConfiguration,
         }
     }
 
-    private fun makeIdentityService(info: NodeInfo): PersistentIdentityService {
+    private fun makeIdentityService(): PersistentIdentityService {
         val trustStore = KeyStoreWrapper(configuration.trustStoreFile, configuration.trustStorePassword)
-        val caKeyStore = KeyStoreWrapper(configuration.nodeKeystore, configuration.keyStorePassword)
         val trustRoot = trustStore.getX509Certificate(X509Utilities.CORDA_ROOT_CA)
-        val clientCa = caKeyStore.certificateAndKeyPair(X509Utilities.CORDA_CLIENT_CA)
-        val caCertificates = arrayOf(info.legalIdentitiesAndCerts[0].certificate, clientCa.certificate.cert)
-        return PersistentIdentityService(trustRoot, *caCertificates)
+        return PersistentIdentityService(trustRoot)
     }
 
     protected abstract fun makeTransactionVerifierService(): TransactionVerifierService
@@ -753,13 +748,12 @@ abstract class AbstractNode(val configuration: NodeConfiguration,
         override val stateMachineRecordedTransactionMapping = DBTransactionMappingStorage()
         override val auditService = DummyAuditService()
         override val transactionVerifierService by lazy { makeTransactionVerifierService() }
-        override val networkMapCache by lazy {
-            NetworkMapCacheImpl(
-                    PersistentNetworkMapCache(
-                            database,
-                            networkParameters.notaries),
-                    identityService)
+        val persistentNetworkMapCache by lazy {
+            PersistentNetworkMapCache(
+                    database,
+                    networkParameters.notaries)
         }
+        override val networkMapCache by lazy { NetworkMapCacheImpl(persistentNetworkMapCache, identityService) }
         override val vaultService by lazy { makeVaultService(keyManagementService, stateLoader, database.hibernateConfig) }
         override val contractUpgradeService by lazy { ContractUpgradeServiceImpl() }
         override val attachments: AttachmentStorage get() = this@AbstractNode.attachments
