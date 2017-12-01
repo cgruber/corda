@@ -745,8 +745,8 @@ abstract class AbstractNode(val configuration: NodeConfiguration,
         override val networkMapCache by lazy {
             NetworkMapCacheImpl(
                     PersistentNetworkMapCache(
-                        database,
-                        networkParameters.notaries),
+                            database,
+                            networkParameters.notaries),
                     identityService)
         }
         override val vaultService by lazy { makeVaultService(keyManagementService, stateLoader, database.hibernateConfig) }
