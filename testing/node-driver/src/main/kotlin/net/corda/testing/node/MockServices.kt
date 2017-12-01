@@ -18,7 +18,6 @@ import net.corda.node.VersionInfo
 import net.corda.node.internal.cordapp.CordappLoader
 import net.corda.node.services.api.SchemaService
 import net.corda.node.services.api.StateMachineRecordedTransactionMappingStorage
-import net.corda.node.services.api.VaultServiceInternal
 import net.corda.node.services.api.WritableTransactionStorage
 import net.corda.node.services.identity.InMemoryIdentityService
 import net.corda.node.services.keys.freshCertificate
@@ -31,7 +30,6 @@ import net.corda.node.services.vault.NodeVaultService
 import net.corda.node.internal.configureDatabase
 import net.corda.nodeapi.internal.persistence.CordaPersistence
 import net.corda.nodeapi.internal.persistence.DatabaseConfig
-import net.corda.nodeapi.internal.persistence.HibernateConfiguration
 import net.corda.testing.*
 import org.bouncycastle.operator.ContentSigner
 import rx.Observable
@@ -108,17 +106,8 @@ open class MockServices(
             val schemaService = NodeSchemaService(cordappLoader.cordappSchemas)
             val database = configureDatabase(dataSourceProps, DatabaseConfig(), identityService, schemaService)
             val mockService = database.transaction {
-                object : MockServices(cordappLoader, initialIdentityName = initialIdentityName, keys = *(keys.toTypedArray())) {
+                object : MockServicesWithVault(database, schemaService, cordappLoader, initialIdentityName, *keys.toTypedArray()) {
                     override val identityService get() = identityService
-                    override val vaultService: VaultServiceInternal = makeVaultService(database.hibernateConfig, schemaService)
-
-                    override fun recordTransactions(statesToRecord: StatesToRecord, txs: Iterable<SignedTransaction>) {
-                        super.recordTransactions(statesToRecord, txs)
-                        // Refactored to use notifyAll() as we have no other unit test for that method with multiple transactions.
-                        vaultService.notifyAll(statesToRecord, txs.map { it.tx })
-                    }
-
-                    override fun jdbcSession(): Connection = database.createSession()
                 }
             }
             return Pair(database, mockService)
@@ -154,14 +143,6 @@ open class MockServices(
     override val transactionVerifierService: TransactionVerifierService get() = InMemoryTransactionVerifierService(2)
     val mockCordappProvider = MockCordappProvider(cordappLoader, attachments)
     override val cordappProvider: CordappProvider get() = mockCordappProvider
-    lateinit var hibernatePersister: HibernateObserver
-
-    fun makeVaultService(hibernateConfig: HibernateConfiguration, schemaService: SchemaService): VaultServiceInternal {
-        val vaultService = NodeVaultService(Clock.systemUTC(), keyManagementService, validatedTransactions, hibernateConfig)
-        hibernatePersister = HibernateObserver.install(vaultService.rawUpdates, hibernateConfig, schemaService)
-        return vaultService
-    }
-
     val cordappServices: MutableClassToInstanceMap<SerializeAsToken> = MutableClassToInstanceMap.create<SerializeAsToken>()
     override fun <T : SerializeAsToken> cordaService(type: Class<T>): T {
         require(type.isAnnotationPresent(CordaService::class.java)) { "${type.name} is not a Corda service" }
@@ -169,6 +150,27 @@ open class MockServices(
     }
 
     override fun jdbcSession(): Connection = throw UnsupportedOperationException()
+}
+
+open class MockServicesWithVault(
+        private val database: CordaPersistence,
+        schemaService: SchemaService,
+        cordappLoader: CordappLoader,
+        initialIdentityName: CordaX500Name,
+        vararg keys: KeyPair) : MockServices(cordappLoader, initialIdentityName, *keys) {
+    private val vaultAndPersister = run {
+        val vaultService = NodeVaultService(Clock.systemUTC(), keyManagementService, validatedTransactions, database.hibernateConfig)
+        Pair(vaultService, HibernateObserver.install(vaultService.rawUpdates, database.hibernateConfig, schemaService))
+    }
+    override val vaultService get() = vaultAndPersister.first
+    val hibernatePersister get() = vaultAndPersister.second
+    override fun recordTransactions(statesToRecord: StatesToRecord, txs: Iterable<SignedTransaction>) {
+        super.recordTransactions(statesToRecord, txs)
+        // Refactored to use notifyAll() as we have no other unit test for that method with multiple transactions.
+        vaultService.notifyAll(statesToRecord, txs.map { it.tx })
+    }
+
+    override fun jdbcSession() = database.createSession()
 }
 
 class MockKeyManagementService(val identityService: IdentityService,

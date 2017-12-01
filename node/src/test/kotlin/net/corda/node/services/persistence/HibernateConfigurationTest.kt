@@ -11,14 +11,12 @@ import net.corda.core.crypto.SecureHash
 import net.corda.core.crypto.generateKeyPair
 import net.corda.core.identity.AbstractParty
 import net.corda.core.identity.Party
-import net.corda.core.node.StatesToRecord
 import net.corda.core.node.services.IdentityService
 import net.corda.core.node.services.Vault
 import net.corda.core.node.services.VaultService
 import net.corda.core.schemas.CommonSchemaV1
 import net.corda.core.schemas.MappedSchema
 import net.corda.core.schemas.PersistentStateRef
-import net.corda.core.transactions.SignedTransaction
 import net.corda.core.utilities.toBase58String
 import net.corda.finance.DOLLARS
 import net.corda.finance.POUNDS
@@ -35,6 +33,7 @@ import net.corda.node.services.schema.HibernateObserver
 import net.corda.node.services.schema.NodeSchemaService
 import net.corda.node.services.vault.VaultSchemaV1
 import net.corda.node.internal.configureDatabase
+import net.corda.node.internal.cordapp.CordappLoader
 import net.corda.nodeapi.internal.persistence.CordaPersistence
 import net.corda.nodeapi.internal.persistence.DatabaseConfig
 import net.corda.nodeapi.internal.persistence.HibernateConfiguration
@@ -42,6 +41,7 @@ import net.corda.testing.*
 import net.corda.testing.contracts.*
 import net.corda.testing.node.MockServices
 import net.corda.testing.node.MockServices.Companion.makeTestDataSourceProperties
+import net.corda.testing.node.MockServicesWithVault
 import net.corda.testing.schemas.DummyLinearStateSchemaV1
 import net.corda.testing.schemas.DummyLinearStateSchemaV2
 import org.assertj.core.api.Assertions
@@ -59,7 +59,7 @@ class HibernateConfigurationTest {
     @Rule
     @JvmField
     val testSerialization = SerializationEnvironmentRule()
-    lateinit var services: MockServices
+    lateinit var services: MockServicesWithVault
     private lateinit var vaultFiller: VaultFiller
     lateinit var bankServices: MockServices
     lateinit var issuerServices: MockServices
@@ -102,18 +102,7 @@ class HibernateConfigurationTest {
         database.transaction {
             hibernateConfig = database.hibernateConfig
             // `consumeCash` expects we can self-notarise transactions
-            services = object : MockServices(cordappPackages, BOB_NAME, generateKeyPair(), DUMMY_NOTARY_KEY) {
-                override val vaultService = makeVaultService(database.hibernateConfig, schemaService)
-                override fun recordTransactions(statesToRecord: StatesToRecord, txs: Iterable<SignedTransaction>) {
-                    for (stx in txs) {
-                        validatedTransactions.addTransaction(stx)
-                    }
-                    // Refactored to use notifyAll() as we have no other unit test for that method with multiple transactions.
-                    vaultService.notifyAll(statesToRecord, txs.map { it.tx })
-                }
-
-                override fun jdbcSession() = database.createSession()
-            }
+            services = MockServicesWithVault(database, schemaService, CordappLoader.createWithTestPackages(cordappPackages), BOB_NAME, generateKeyPair(), DUMMY_NOTARY_KEY)
             vaultFiller = VaultFiller(services, DUMMY_NOTARY, DUMMY_NOTARY_KEY, notary, ::Random)
             hibernatePersister = services.hibernatePersister
         }
