@@ -17,13 +17,14 @@ import net.corda.core.utilities.contextLogger
 import net.corda.core.utilities.getOrThrow
 import net.corda.node.internal.cordapp.CordappLoader
 import net.corda.node.internal.cordapp.CordappProviderImpl
-import net.corda.testing.*
 import net.corda.testing.DUMMY_BANK_A
 import net.corda.testing.DUMMY_NOTARY
-import net.corda.testing.driver.DriverDSLExposedInterface
+import net.corda.testing.driver.DriverDSL
 import net.corda.testing.driver.NodeHandle
 import net.corda.testing.driver.driver
+import net.corda.testing.internal.DriverDSLImpl
 import net.corda.testing.node.MockServices
+import net.corda.testing.withTestSerialization
 import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Test
@@ -51,14 +52,14 @@ class AttachmentLoadingTests {
                 Class.forName("net.corda.finance.contracts.isolated.IsolatedDummyFlow\$Initiator", true, URLClassLoader(arrayOf(isolatedJAR)))
                         .asSubclass(FlowLogic::class.java)
 
-        private fun DriverDSLExposedInterface.createTwoNodes(): List<NodeHandle> {
+        private fun DriverDSL.createTwoNodes(): List<NodeHandle> {
             return listOf(
                     startNode(providedName = bankAName),
                     startNode(providedName = bankBName)
             ).transpose().getOrThrow()
         }
 
-        private fun DriverDSLExposedInterface.installIsolatedCordappTo(nodeName: CordaX500Name) {
+        private fun DriverDSLImpl.installIsolatedCordappTo(nodeName: CordaX500Name) {
             // Copy the app jar to the first node. The second won't have it.
             val path = (baseDirectory(nodeName.toString()) / "cordapps").createDirectories() / "isolated.jar"
             logger.info("Installing isolated jar to $path")
@@ -97,6 +98,7 @@ class AttachmentLoadingTests {
     @Test
     fun `test that attachments retrieved over the network are not used for code`() {
         driver {
+            this as DriverDSLImpl
             installIsolatedCordappTo(bankAName)
             val (bankA, bankB) = createTwoNodes()
             assertFailsWith<UnexpectedFlowEndException>("Party C=CH,L=Zurich,O=BankB rejected session request: Don't know net.corda.finance.contracts.isolated.IsolatedDummyFlow\$Initiator") {
@@ -108,6 +110,7 @@ class AttachmentLoadingTests {
     @Test
     fun `tests that if the attachment is loaded on both sides already that a flow can run`() {
         driver {
+            this as DriverDSLImpl
             installIsolatedCordappTo(bankAName)
             installIsolatedCordappTo(bankBName)
             val (bankA, bankB) = createTwoNodes()
